@@ -1,0 +1,1106 @@
+@font-face {
+    font-family: 'Nokia Cellphone FC';
+    src: url('https://cdn.jsdelivr.net/gh/subStackRepo/nokiafc/nokiafc22.ttf') format('truetype');
+    font-weight: normal;
+    font-style: normal;
+}
+
+body {
+    margin: 0;
+    padding: 0;
+    background-color: #000;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    overflow: hidden;
+}
+
+#gameWrapper {
+    width: 202px;
+    height: 160px;
+    position: relative;
+}
+
+canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 202px;
+    height: 160px;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    -ms-interpolation-mode: nearest-neighbor;
+}
+
+#mobileControls {
+    display: none;
+    position: absolute;
+    bottom: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+}
+
+.mobileButton {
+    width: 40px;
+    height: 40px;
+    margin: 5px;
+    background-color: rgba(255, 255, 255, 0.3);
+    border: 1px solid white;
+    border-radius: 50%;
+    touch-action: manipulation;
+}
+
+#prizeScreen {
+    display: none;
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: #000;
+    color: #fff;
+    font-family: 'Nokia Cellphone FC', monospace;
+    font-size: 8px;
+    padding: 10px;
+    box-sizing: border-box;
+    overflow-y: auto;
+}
+
+/* Make the game responsive */
+@media (max-width: 600px) {
+    #gameWrapper {
+        transform: scale(1.5);
+        transform-origin: top center;
+    }
+    #mobileControls {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        width: 100%;
+        max-width: 300px;
+    }
+}
+</style>
+</head>
+<body>
+<div id="gameWrapper">
+    <canvas id="gameCanvas" width="101" height="80"></canvas>
+    <div id="prizeScreen"></div>
+    <div id="mobileControls">
+        <button id="leftBtn" class="mobileButton">←</button>
+        <button id="rightBtn" class="mobileButton">→</button>
+        <button id="upBtn" class="mobileButton">↑</button>
+        <button id="downBtn" class="mobileButton">↓</button>
+        <button id="fireBtn" class="mobileButton">Fire</button>
+        <button id="missileBtn" class="mobileButton">Missile</button>
+    </div>
+</div>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const prizeScreen = document.getElementById('prizeScreen');
+canvas.width = 101;
+canvas.height = 80;
+
+const stars = [];
+const maxStars = 50;
+const bullets = [];
+const enemyBullets = [];
+const enemies = [];
+const powerups = [];
+const allies = [];
+const homingMissiles = [];
+
+let score = 0;
+let lives = 3;
+let gameActive = false;
+let gameStarted = false;
+let showingPrizePrompt = false;
+
+let enemiesKilled = 0;
+let bossActive = false;
+let boss = null;
+
+const ship = {
+    x: Math.floor(canvas.width / 2),
+    y: canvas.height - 10,
+    width: 7,
+    height: 5,
+    color: '#808080',
+    windowColor: '#00ffff',
+    speed: 2,
+    lastShot: 0,
+    shootCooldown: 250,
+    powerupTimer: 0,
+    homingMissileCount: 0
+};
+
+const keys = {
+    w: false,
+    a: false,
+    s: false,
+    d: false,
+    ' ': false,
+    e: false
+};
+
+let currentSound = null;
+
+function initAudioContext() {
+    let audioContext;
+    if (!audioContext) {
+        try {
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        } catch (err) {
+            console.warn('Audio context creation failed:', err);
+            // Provide fallback/silent audio context
+            audioContext = {
+                createOscillator: () => ({ connect: () => {}, start: () => {}, stop: () => {} }),
+                createGain: () => ({ connect: () => {}, gain: { setValueAtTime: () => {} } }),
+                currentTime: 0
+            };
+        }
+    }
+    return audioContext;
+}
+
+function playSound(frequency, duration) {
+    try {
+        const ctx = initAudioContext();
+        if (!ctx) return;
+        
+        if (currentSound) {
+            currentSound.stop();
+        }
+        
+        const oscillator = ctx.createOscillator();
+        const gainNode = ctx.createGain();
+        
+        oscillator.type = 'square';
+        oscillator.frequency.setValueAtTime(frequency, ctx.currentTime);
+        gainNode.gain.setValueAtTime(0.1, ctx.currentTime);
+        
+        oscillator.connect(gainNode);
+        gainNode.connect(ctx.destination);
+        
+        oscillator.start();
+        oscillator.stop(ctx.currentTime + duration);
+        
+        currentSound = oscillator;
+        
+        setTimeout(() => {
+            if (currentSound === oscillator) {
+                currentSound = null;
+            }
+        }, duration * 1000);
+    } catch (err) {
+        console.warn('Sound playback error:', err);
+    }
+}
+
+function createStar() {
+    return {
+        x: Math.random() * canvas.width,
+        y: Math.random() * canvas.height,
+        speed: 0.1 + Math.random() * 0.4
+    };
+}
+
+function createEnemy() {
+    const side = Math.floor(Math.random() * 4);
+    let x, y, direction, rotation;
+
+    switch(side) {
+        case 0: // Top
+            x = Math.floor(Math.random() * (canvas.width - 10)) + 5;
+            y = -5;
+            direction = { x: 0, y: 1 };
+            rotation = Math.PI;
+            break;
+        case 1: // Right
+            x = canvas.width + 5;
+            y = Math.floor(Math.random() * (canvas.height - 10)) + 5;
+            direction = { x: -1, y: 0 };
+            rotation = -Math.PI / 2;
+            break;
+        case 2: // Bottom
+            x = Math.floor(Math.random() * (canvas.width - 10)) + 5;
+            y = canvas.height + 5;
+            direction = { x: 0, y: -1 };
+            rotation = 0;
+            break;
+        case 3: // Left
+            x = -5;
+            y = Math.floor(Math.random() * (canvas.height - 10)) + 5;
+            direction = { x: 1, y: 0 };
+            rotation = Math.PI / 2;
+            break;
+    }
+
+    return {
+        x: x,
+        y: y,
+        width: 7,
+        height: 5,
+        color: '#ff0000',
+        speed: 1,
+        direction: direction,
+        rotation: rotation,
+        lastShot: 0,
+        shootCooldown: 3000,
+        movesTowardsPlayer: Math.random() < 0.5,
+        health: Math.floor(Math.random() * 3) + 1 // Random health between 1 and 3
+    };
+}
+
+function createBoss() {
+    return {
+        x: canvas.width / 2,
+        y: -20,
+        width: 20,
+        height: 15,
+        color: '#ff0000',
+        speed: 0.5,
+        health: 20,
+        maxHealth: 20,
+        pulsePhase: 0,
+        lastShot: 0,
+        shootCooldown: 1000,
+        pattern: 0,
+        patternTimer: 0
+    };
+}
+
+function createPowerup() {
+    const types = ['speedup', 'ally', 'followingShip', 'homingMissile', '1up'];
+    const type = types[Math.floor(Math.random() * types.length)];
+    return {
+        x: Math.random() * (canvas.width - 10) + 5,
+        y: -5,
+        type: type,
+        speed: 0.5
+    };
+}
+
+function createAlly() {
+    return {
+        x: ship.x,
+        y: ship.y - 10,
+        width: 5,
+        height: 3,
+        color: '#00ff00',
+        speed: ship.speed,
+        lastShot: 0,
+        shootCooldown: 500
+    };
+}
+
+function createFollowingShip() {
+    return {
+        x: ship.x,
+        y: ship.y - 15,
+        width: 5,
+        height: 3,
+        color: '#0000ff',
+        speed: ship.speed,
+        lastShot: 0,
+        shootCooldown: 400
+    };
+}
+
+function createHomingMissile() {
+    return {
+        x: ship.x,
+        y: ship.y - 5,
+        speed: 3,
+        target: null
+    };
+}
+
+function drawStartScreen() {
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Draw the Nokia-style frame
+    ctx.strokeStyle = '#808080';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(2, 2, canvas.width - 4, canvas.height - 4);
+
+    // Draw the "Space Force" title
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '16px "Nokia Cellphone FC"';
+    ctx.textAlign = 'center';
+    ctx.fillText('Space Force', canvas.width / 2, 20);
+
+    // Draw the "Win!" text
+    ctx.font = '10px "Nokia Cellphone FC"';
+    ctx.fillText('Win!', canvas.width / 2, 35);
+
+    // Draw product images (represented by rectangles)
+    ctx.fillStyle = '#c0c0c0';
+    ctx.fillRect(10, 45, 25, 20);  // iPod
+    ctx.fillRect(40, 45, 20, 25);  // Nokia phone
+    ctx.fillRect(65, 45, 25, 20);  // PSP
+
+    // Draw product labels
+    ctx.font = '6px "Nokia Cellphone FC"';
+    ctx.fillStyle = '#ffffff';
+    ctx.textAlign = 'center';
+    ctx.fillText('iPod', 22, 75);
+    ctx.fillText('Nokia', 50, 75);
+    ctx.fillText('PSP', 77, 75);
+
+    // Draw "Press SPACE" text
+    ctx.font = '8px "Nokia Cellphone FC"';
+    ctx.fillText('Press SPACE', canvas.width / 2, canvas.height - 10);
+}
+
+function updateStars() {
+    for (let star of stars) {
+        star.y += star.speed;
+        if (star.y > canvas.height) {
+            star.y = 0;
+            star.x = Math.random() * canvas.width;
+        }
+    }
+
+    if (stars.length < maxStars) {
+        stars.push(createStar());
+    }
+}
+
+function drawStars() {
+    ctx.fillStyle = 'white';
+    for (let star of stars) {
+        ctx.fillRect(Math.floor(star.x), Math.floor(star.y), 1, 1);
+    }
+}
+
+function drawShip() {
+    ctx.fillStyle = ship.color;
+    ctx.fillRect(ship.x - 3, ship.y, 7, 4);
+    ctx.fillRect(ship.x - 1, ship.y - 1, 3, 1);
+    
+    ctx.fillStyle = ship.windowColor;
+    ctx.fillRect(ship.x - 1, ship.y + 1, 3, 2);
+}
+
+function updateShip() {
+    if (keys.a && ship.x > 3) {
+        ship.x -= ship.speed;
+    }
+    if (keys.d && ship.x < canvas.width - 3) {
+        ship.x += ship.speed;
+    }
+    if (keys.w && ship.y > 0) {
+        ship.y -= ship.speed;
+    }
+    if (keys.s && ship.y < canvas.height - ship.height) {
+        ship.y += ship.speed;
+    }
+    
+    ship.x = Math.round(ship.x);
+    ship.y = Math.round(ship.y);
+
+    if (ship.powerupTimer > 0) {
+        ship.powerupTimer--;
+        if (ship.powerupTimer === 0) {
+            ship.speed = 2; // Reset speed when powerup expires
+        }
+    }
+}
+
+function shoot() {
+    const currentTime = Date.now();
+    if (keys[' '] && currentTime - ship.lastShot > ship.shootCooldown) {
+        bullets.push({
+            x: ship.x,
+            y: ship.y - 2,
+            speed: 2
+        });
+        ship.lastShot = currentTime;
+        playSound(800, 0.1);
+    }
+    
+    if (keys.e && ship.homingMissileCount > 0) {
+        homingMissiles.push(createHomingMissile());
+        ship.homingMissileCount--;
+        playSound(900, 0.2);
+    }
+}
+
+function updateBullets() {
+    for (let i = bullets.length - 1; i >= 0; i--) {
+        bullets[i].y -= bullets[i].speed;
+        if (bullets[i].y < 0) {
+            bullets.splice(i, 1);
+        }
+    }
+}
+
+function drawBullets() {
+    ctx.fillStyle = 'yellow';
+    for (let bullet of bullets) {
+        ctx.fillRect(Math.round(bullet.x), Math.round(bullet.y), 1, 2);
+    }
+}
+
+function updateEnemies() {
+    for (let i = enemies.length - 1; i >= 0; i--) {
+        let enemy = enemies[i];
+        if (enemy.movesTowardsPlayer) {
+            let dx = ship.x - enemy.x;
+            let dy = ship.y - enemy.y;
+            let distance = Math.sqrt(dx * dx + dy * dy);
+            enemy.x += (dx / distance) * enemy.speed;
+            enemy.y += (dy / distance) * enemy.speed;
+            enemy.rotation = Math.atan2(dy, dx) + Math.PI / 2;
+        } else {
+            enemy.x += enemy.speed * enemy.direction.x;
+            enemy.y += enemy.speed * enemy.direction.y;
+        }
+
+        if (enemy.x < -10 || enemy.x > canvas.width + 10 || 
+            enemy.y < -10 || enemy.y > canvas.height + 10) {
+            enemies.splice(i, 1);
+            continue;
+        }
+
+        const currentTime = Date.now();
+        if (currentTime - enemy.lastShot > enemy.shootCooldown) {
+            enemyBullets.push({
+                x: enemy.x + Math.floor(enemy.width / 2),
+                y: enemy.y + enemy.height / 2,
+                speed: 1,
+                direction: {
+                    x: ship.x - enemy.x,
+                    y: ship.y - enemy.y
+                }
+            });
+            enemy.lastShot = currentTime;
+            playSound(400, 0.1);
+        }
+        
+        enemy.x = Math.round(enemy.x);
+        enemy.y = Math.round(enemy.y);
+    }
+
+    if (enemies.length < 5 && Math.random() < 0.05) {
+        enemies.push(createEnemy());
+    }
+}
+
+function drawEnemies() {
+    for (let enemy of enemies) {
+        ctx.save();
+        ctx.translate(enemy.x, enemy.y);
+        ctx.rotate(enemy.rotation);
+        
+        ctx.fillStyle = enemy.color;
+        ctx.fillRect(-3, 0, 7, 4);
+        ctx.fillRect(-1, -1, 3, 1);
+        
+        // Draw health indicator
+        ctx.fillStyle = '#00ff00';
+        for (let i = 0; i < enemy.health; i++) {
+            ctx.fillRect(-3 + i * 3, -3, 2, 1);
+        }
+        
+        ctx.restore();
+    }
+}
+
+function updateEnemyBullets() {
+    for (let i = enemyBullets.length - 1; i >= 0; i--) {
+        let bullet = enemyBullets[i];
+        let magnitude = Math.sqrt(bullet.direction.x ** 2 + bullet.direction.y ** 2);
+        bullet.x += (bullet.direction.x / magnitude) * bullet.speed;
+        bullet.y += (bullet.direction.y / magnitude) * bullet.speed;
+        
+        if (bullet.x < 0 || bullet.x > canvas.width || bullet.y < 0 || bullet.y > canvas.height) {
+            enemyBullets.splice(i, 1);
+        }
+    }
+}
+
+function drawEnemyBullets() {
+    ctx.fillStyle = 'red';
+    for (let bullet of enemyBullets) {
+        ctx.fillRect(Math.round(bullet.x), Math.round(bullet.y), 1, 2);
+    }
+}
+
+function updatePowerups() {
+    for (let i = powerups.length - 1; i >= 0; i--) {
+        let powerup = powerups[i];
+        powerup.y += powerup.speed;
+        if (powerup.y > canvas.height) {
+            powerups.splice(i, 1);
+        }
+    }
+
+    if (powerups.length < 1 && Math.random() < 0.01) {
+        powerups.push(createPowerup());
+    }
+}
+
+function drawPowerups() {
+    for (let powerup of powerups) {
+        switch (powerup.type) {
+            case 'speedup':
+                ctx.fillStyle = '#00ffff';
+                break;
+            case 'ally':
+                ctx.fillStyle = '#00ff00';
+                break;
+            case 'followingShip':
+                ctx.fillStyle = '#0000ff';
+                break;
+            case 'homingMissile':
+                ctx.fillStyle = '#ff00ff';
+                break;
+            case '1up':
+                ctx.fillStyle = '#ffffff';
+                break;
+        }
+        ctx.fillRect(Math.round(powerup.x), Math.round(powerup.y), 5, 5);
+    }
+}
+
+function updateAllies() {
+    for (let ally of allies) {
+        // Move ally to follow the player
+        ally.x += (ship.x - ally.x) * 0.1;
+        ally.y = ship.y - 10;
+
+        // Ally shooting
+        const currentTime = Date.now();
+        if (currentTime - ally.lastShot > ally.shootCooldown) {
+            bullets.push({
+                x: ally.x,
+                y: ally.y - 2,
+                speed: 2
+            });
+            ally.lastShot = currentTime;
+            playSound(700, 0.1);
+        }
+    }
+}
+
+function drawAllies() {
+    ctx.fillStyle = '#00ff00';
+    for (let ally of allies) {
+        ctx.fillRect(Math.round(ally.x) - 2, Math.round(ally.y), 5, 3);
+        ctx.fillRect(Math.round(ally.x) - 1, Math.round(ally.y) - 1, 3, 1);
+    }
+}
+
+function updateFollowingShips() {
+    for (let followingShip of allies.filter(a => a.color === '#0000ff')) {
+        // Move following ship to follow the player
+        followingShip.x += (ship.x - followingShip.x) * 0.05;
+        followingShip.y = ship.y - 15;
+
+        // Following ship shooting
+        const currentTime = Date.now();
+        if (currentTime - followingShip.lastShot > followingShip.shootCooldown) {
+            bullets.push({
+                x: followingShip.x,
+                y: followingShip.y - 2,
+                speed: 2
+            });
+            followingShip.lastShot = currentTime;
+            playSound(750, 0.1);
+        }
+    }
+}
+
+function drawFollowingShips() {
+    ctx.fillStyle = '#0000ff';
+    for (let followingShip of allies.filter(a => a.color === '#0000ff')) {
+        ctx.fillRect(Math.round(followingShip.x) - 2, Math.round(followingShip.y), 5, 3);
+        ctx.fillRect(Math.round(followingShip.x) - 1, Math.round(followingShip.y) - 1, 3, 1);
+    }
+}
+
+function updateHomingMissiles() {
+    for (let i = homingMissiles.length - 1; i >= 0; i--) {
+        let missile = homingMissiles[i];
+        
+        if (!missile.target || !enemies.includes(missile.target)) {
+            missile.target = enemies.length > 0 ? enemies[Math.floor(Math.random() * enemies.length)] : null;
+        }
+        
+        if (missile.target) {
+            let dx = missile.target.x - missile.x;
+            let dy = missile.target.y - missile.y;
+            let distance = Math.sqrt(dx * dx + dy * dy);
+            
+            missile.x += (dx / distance) * missile.speed;
+            missile.y += (dy / distance) * missile.speed;
+            
+            // Check for collision with target
+            if (distance < 5) {
+                missile.target.health -= 2;
+                if (missile.target.health <= 0) {
+                    enemies.splice(enemies.indexOf(missile.target), 1);
+                    score += 20;
+                }
+                homingMissiles.splice(i, 1);
+                playSound(600, 0.2);
+            }
+        } else {
+            missile.y -= missile.speed;
+        }
+        
+        if (missile.y < 0) {
+            homingMissiles.splice(i, 1);
+        }
+    }
+}
+
+function drawHomingMissiles() {
+    ctx.fillStyle = '#ff00ff';
+    for (let missile of homingMissiles) {
+        ctx.beginPath();
+        ctx.arc(Math.round(missile.x), Math.round(missile.y), 2, 0, Math.PI * 2);
+        ctx.fill();
+    }
+}
+
+function updateBoss() {
+    if (!boss) return;
+
+    // Pulse animation
+    boss.pulsePhase += 0.1;
+    let pulseScale = 1 + Math.sin(boss.pulsePhase) * 0.2;
+    
+    // Movement pattern
+    boss.patternTimer++;
+    switch(boss.pattern) {
+        case 0: // Side to side
+            boss.x += Math.sin(boss.patternTimer * 0.05) * 2;
+            if (boss.y < 20) boss.y += 0.5;
+            break;
+        case 1: // Circle pattern
+            boss.x = canvas.width/2 + Math.cos(boss.patternTimer * 0.05) * 30;
+            boss.y = 30 + Math.sin(boss.patternTimer * 0.05) * 20;
+            break;
+    }
+    
+    // Switch patterns periodically
+    if (boss.patternTimer > 200) {
+        boss.pattern = (boss.pattern + 1) % 2;
+        boss.patternTimer = 0;
+    }
+
+    // Shooting
+    const currentTime = Date.now();
+    if (currentTime - boss.lastShot > boss.shootCooldown) {
+        // Spread shot
+        for (let i = -2; i <= 2; i++) {
+            enemyBullets.push({
+                x: boss.x + boss.width/2,
+                y: boss.y + boss.height/2,
+                speed: 1.5,
+                direction: {
+                    x: Math.sin(i * 0.3),
+                    y: 1
+                }
+            });
+        }
+        boss.lastShot = currentTime;
+        playSound(200, 0.2);
+    }
+
+    // Check boss death
+    if (boss.health <= 0) {
+        // Spawn multiple powerups on death
+        for (let i = 0; i < 5; i++) {
+            powerups.push(createPowerup());
+        }
+        boss = null;
+        bossActive = false;
+        score += 100;
+        playSound(100, 1);
+    }
+}
+
+function drawBoss() {
+    if (!boss) return;
+
+    // Health bar
+    const healthBarWidth = 40;
+    const healthPercentage = boss.health / boss.maxHealth;
+    ctx.fillStyle = '#600000';
+    ctx.fillRect(boss.x - healthBarWidth/2, boss.y - 10, healthBarWidth, 3);
+    ctx.fillStyle = '#ff0000';
+    ctx.fillRect(boss.x - healthBarWidth/2, boss.y - 10, healthBarWidth * healthPercentage, 3);
+
+    // Boss body
+    ctx.fillStyle = boss.color;
+    let pulseScale = 1 + Math.sin(boss.pulsePhase) * 0.2;
+    
+    // Draw enlarged boss ship
+    ctx.save();
+    ctx.translate(boss.x + boss.width/2, boss.y + boss.height/2);
+    ctx.scale(pulseScale, pulseScale);
+    ctx.translate(-(boss.x + boss.width/2), -(boss.y + boss.height/2));
+    
+    ctx.fillRect(boss.x, boss.y, boss.width, boss.height);
+    ctx.fillRect(boss.x + boss.width/4, boss.y - 5, boss.width/2, 5);
+    
+    // Windows
+    ctx.fillStyle = '#ffff00';
+    ctx.fillRect(boss.x + boss.width/4, boss.y + boss.height/3, boss.width/2, boss.height/3);
+    
+    ctx.restore();
+}
+
+function checkCollisions() {
+    // Ship collision with enemy bullets
+    for (let i = enemyBullets.length - 1; i >= 0; i--) {
+        let bullet = enemyBullets[i];
+        if (bullet.x >= ship.x - 3 && bullet.x <= ship.x + 3 &&
+            bullet.y >= ship.y - 1 && bullet.y <= ship.y + 4) {
+            enemyBullets.splice(i, 1);
+            lives--;
+            playSound(200, 0.2);
+            if (lives <= 0) {
+                gameOver();
+                return;
+            }
+        }
+    }
+
+    // Ship collision with enemies
+    for (let i = enemies.length - 1; i >= 0; i--) {
+        let enemy = enemies[i];
+        if (ship.x + 3 > enemy.x - 3 && ship.x - 3 < enemy.x + 3 &&
+            ship.y + 4 > enemy.y && ship.y - 1 < enemy.y + 5) {
+            enemies.splice(i, 1);
+            lives--;
+            playSound(100, 0.3);
+            if (lives <= 0) {
+                gameOver();
+                return;
+            }
+        }
+    }
+
+    // Bullet collision with enemies
+    for (let i = bullets.length - 1; i >= 0; i--) {
+        let bullet = bullets[i];
+        for (let j = enemies.length - 1; j >= 0; j--) {
+            let enemy = enemies[j];
+            if (bullet.x >= enemy.x - 3 && bullet.x <= enemy.x + 3 &&
+                bullet.y >= enemy.y && bullet.y <= enemy.y + 5) {
+                bullets.splice(i, 1);
+                enemy.health--;
+                if (enemy.health <= 0) {
+                    enemies.splice(j, 1);
+                    enemiesKilled++;
+                    score += 10;
+                    // Check for boss spawn
+                    if (enemiesKilled % 40 === 0 && !bossActive) {
+                        boss = createBoss();
+                        bossActive = true;
+                        playSound(300, 0.5);
+                    }
+                } else {
+                    playSound(300, 0.1);
+                }
+                break;
+            }
+        }
+    }
+
+    // Boss collision detection
+    if (boss) {
+        for (let i = bullets.length - 1; i >= 0; i--) {
+            let bullet = bullets[i];
+            if (bullet.x >= boss.x && bullet.x <= boss.x + boss.width &&
+                bullet.y >= boss.y && bullet.y <= boss.y + boss.height) {
+                bullets.splice(i, 1);
+                boss.health--;
+                
+                // Spawn powerup on each hit
+                powerups.push(createPowerup());
+                
+                playSound(300, 0.1);
+                break;
+            }
+        }
+        
+        // Ship collision with boss
+        if (ship.x + 3 > boss.x && ship.x - 3 < boss.x + boss.width &&
+            ship.y + 4 > boss.y && ship.y - 1 < boss.y + boss.height) {
+            lives--;
+            playSound(100, 0.3);
+            if (lives <= 0) {
+                gameOver();
+                return;
+            }
+        }
+    }
+
+    // Ship collision with powerups
+    for (let i = powerups.length - 1; i >= 0; i--) {
+        let powerup = powerups[i];
+        if (ship.x + 3 > powerup.x && ship.x - 3 < powerup.x + 5 &&
+            ship.y + 4 > powerup.y && ship.y - 1 < powerup.y + 5) {
+            if (powerup.type === 'speedup') {
+                ship.speed = 4;
+                ship.powerupTimer = 300; // 30 seconds (10 fps * 30)
+            } else if (powerup.type === 'ally') {
+                allies.push(createAlly());
+            } else if (powerup.type === 'followingShip') {
+                allies.push(createFollowingShip());
+            } else if (powerup.type === 'homingMissile') {
+                ship.homingMissileCount += 3;
+            } else if (powerup.type === '1up') {
+                lives++;
+            }
+            powerups.splice(i, 1);
+            playSound(1000, 0.2);
+        }
+    }
+}
+
+function drawScore() {
+    ctx.fillStyle = 'white';
+    ctx.font = '8px "Nokia Cellphone FC"';
+    ctx.textAlign = 'left';
+    ctx.fillText(`Score: ${score}`, 4, 8);
+}
+
+function drawLives() {
+    ctx.fillStyle = 'white';
+    ctx.font = '8px "Nokia Cellphone FC"';
+    ctx.textAlign = 'left';
+    ctx.fillText(`Lives: ${lives}`, 4, 18);
+}
+
+function drawHomingMissileCount() {
+    ctx.fillStyle = 'white';
+    ctx.font = '8px "Nokia Cellphone FC"';
+    ctx.textAlign = 'left';
+    ctx.fillText(`Missiles: ${ship.homingMissileCount}`, 4, 28);
+}
+
+function gameOver() {
+    gameActive = false;
+    console.log("Game Over! Final score:", score);
+    playSound(150, 1);
+}
+
+function drawGameOver() {
+    ctx.fillStyle = 'white';
+    ctx.font = '16px "Nokia Cellphone FC"';
+    ctx.textAlign = 'center';
+    ctx.fillText('GAME OVER', canvas.width / 2, canvas.height / 2);
+    ctx.font = '8px "Nokia Cellphone FC"';
+    ctx.textAlign = 'left';
+    ctx.fillText('Restart (Q)', 4, canvas.height - 14);
+    ctx.fillText('Show prize (E)', 4, canvas.height - 4);
+}
+
+function resetGame() {
+    score = 0;
+    lives = 3;
+    gameActive = true;
+    showingPrizePrompt = false;
+    ship.x = Math.floor(canvas.width / 2);
+    ship.y = canvas.height - 10;
+    ship.speed = 2;
+    ship.powerupTimer = 0;
+    ship.homingMissileCount = 0;
+    bullets.length = 0;
+    enemyBullets.length = 0;
+    enemies.length = 0;
+    powerups.length = 0;
+    allies.length = 0;
+    homingMissiles.length = 0;
+    for (let i = 0; i < 3; i++) {
+        enemies.push(createEnemy());
+    }
+    playSound(500, 0.2);
+}
+
+function showPrizePrompt() {
+    if (score >= 1000) {
+        showPrizeScreen();
+    } else {
+        showingPrizePrompt = true;
+    }
+}
+
+function drawPrizePrompt() {
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    
+    ctx.fillStyle = 'white';
+    ctx.font = '8px "Nokia Cellphone FC"';
+    ctx.textAlign = 'center';
+    ctx.fillText('Are you sure?', canvas.width / 2, canvas.height / 2 - 10);
+    ctx.fillText('Maybe try better and', canvas.width / 2, canvas.height / 2);
+    ctx.fillText('get a bigger prize!', canvas.width / 2, canvas.height / 2 + 10);
+    ctx.fillText('Press E to continue', canvas.width / 2, canvas.height / 2 + 25);
+    ctx.fillText('or Q to go back', canvas.width / 2, canvas.height / 2 + 35);
+}
+
+function showPrizeScreen() {
+    canvas.style.display = 'none';
+    prizeScreen.style.display = 'block';
+    prizeScreen.innerHTML = `
+        <h2>Congratulations!</h2>
+        <p>You've won a prize for your score of ${score}!</p>
+        <p>Your prize is: ${getPrize()}</p>
+        <p>Press Q to return to the game.</p>
+    `;
+}
+
+function getPrize() {
+    const prizes = [
+        "iPod Nano (2nd generation)",
+        "Nokia N95",
+        "PlayStation Portable (PSP-1000)",
+        "Motorola RAZR V3",
+        "BlackBerry Pearl",
+        "Nintendo DS Lite"
+    ];
+    return prizes[Math.floor(Math.random() * prizes.length)];
+}
+
+function hidePrizeScreen() {
+    canvas.style.display = 'block';
+    prizeScreen.style.display = 'none';
+}
+
+function update() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    
+    if (!gameStarted) {
+        drawStartScreen();
+    } else if (gameActive) {
+        updateStars();
+        drawStars();
+        updateShip();
+        shoot();
+        updateBullets();
+        updateEnemies();
+        if (bossActive) {
+            updateBoss();
+        }
+        updateEnemyBullets();
+        updatePowerups();
+        updateAllies();
+        updateFollowingShips();
+        updateHomingMissiles();
+        checkCollisions();
+        drawShip();
+        drawBullets();
+        drawEnemies();
+        if (bossActive) {
+            drawBoss();
+        }
+        drawEnemyBullets();
+        drawPowerups();
+        drawAllies();
+        drawFollowingShips();
+        drawHomingMissiles();
+        drawScore();
+        drawLives();
+        drawHomingMissileCount();
+    } else if (showingPrizePrompt) {
+        drawPrizePrompt();
+    } else {
+        drawGameOver();
+    }
+}
+
+for (let i = 0; i < maxStars; i++) {
+    stars.push(createStar());
+}
+
+document.fonts.load('16px "Nokia Cellphone FC"').then(() => {
+    update();
+}).catch(err => {
+    console.warn('Font loading error:', err);
+    update(); 
+});
+
+const gameLoop = setInterval(() => {
+    try {
+        update();
+    } catch (err) {
+        console.warn('Game loop error:', err);
+    }
+}, 1000 / 10);
+
+document.addEventListener('keydown', (event) => {
+    if (event.key.toLowerCase() in keys) {
+        keys[event.key.toLowerCase()] = true;
+    }
+    if (event.key === ' ' && !gameStarted) {
+        gameStarted = true;
+        gameActive = true;
+        resetGame();
+    }
+    if (event.key.toLowerCase() === 'q') {
+        if (!gameActive && gameStarted && !showingPrizePrompt) {
+            resetGame();
+        } else if (showingPrizePrompt) {
+            showingPrizePrompt = false;
+        } else if (prizeScreen.style.display === 'block') {
+            hidePrizeScreen();
+        }
+    }
+    if (event.key.toLowerCase() === 'e') {
+        if (!gameActive && gameStarted && !showingPrizePrompt) {
+            showPrizePrompt();
+        } else if (showingPrizePrompt) {
+            showPrizeScreen();
+            showingPrizePrompt = false;
+        }
+    }
+});
+
+document.addEventListener('keyup', (event) => {
+    if (event.key.toLowerCase() in keys) {
+        keys[event.key.toLowerCase()] = false;
+    }
+});
+
+// Add mobile control event listeners
+document.getElementById('leftBtn').addEventListener('touchstart', () => keys.a = true);
+document.getElementById('leftBtn').addEventListener('touchend', () => keys.a = false);
+document.getElementById('rightBtn').addEventListener('touchstart', () => keys.d = true);
+document.getElementById('rightBtn').addEventListener('touchend', () => keys.d = false);
+document.getElementById('upBtn').addEventListener('touchstart', () => keys.w = true);
+document.getElementById('upBtn').addEventListener('touchend', () => keys.w = false);
+document.getElementById('downBtn').addEventListener('touchstart', () => keys.s = true);
+document.getElementById('downBtn').addEventListener('touchend', () => keys.s = false);
+document.getElementById('fireBtn').addEventListener('touchstart', () => keys[' '] = true);
+document.getElementById('fireBtn').addEventListener('touchend', () => keys[' '] = false);
+document.getElementById('missileBtn').addEventListener('touchstart', () => keys.e = true);
+document.getElementById('missileBtn').addEventListener('touchend', () => keys.e = false);
+
+// Prevent default touch behavior
+document.querySelectorAll('.mobileButton').forEach(button => {
+    button.addEventListener('touchstart', (e) => e.preventDefault());
+    button.addEventListener('touchend', (e) => e.preventDefault());
+});
+
+document.addEventListener('click', () => {
+    try {
+        initAudioContext();
+    } catch (err) {
+        console.warn('Audio init error:', err);
+    }
+}, { once: true });
+</script>
+</body>
+</html>
